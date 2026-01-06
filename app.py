@@ -12,11 +12,12 @@ import cv2
 import pytesseract
 import numpy as np
 import re
+import base64  # <--- TAMBAHAN PENTING
 
 # --- 1. KONFIGURASI HALAMAN ---
 st.set_page_config(layout="wide", page_title="Universal KMZ Digitizer")
 
-# CSS untuk menyembunyikan menu Streamlit agar rapi di Google Sites
+# CSS untuk menyembunyikan menu Streamlit
 hide_streamlit_style = """
             <style>
             #MainMenu {visibility: hidden;}
@@ -35,13 +36,11 @@ def pixel_to_latlon(x, y, width, height, bounds):
     lat_max, lon_max = bounds[1]
     lat_range = lat_max - lat_min
     lon_range = lon_max - lon_min
-    # Y image is inverted relative to Latitude
     lat = lat_max - (y / height) * lat_range
     lon = lon_min + (x / width) * lon_range
     return lat, lon
 
 def get_pole_regex(option_key):
-    """Menerjemahkan pilihan user menjadi rumus Regex"""
     patterns = {
         "Angka+Huruf (Cth: 1A, 2B, 10C)": r'^[0-9]+[A-Z]$',
         "Huruf+Angka (Cth: P1, T01, A5)": r'^[A-Z]+[0-9]+$',
@@ -51,14 +50,10 @@ def get_pole_regex(option_key):
     return patterns.get(option_key, r'^[0-9]+[A-Z]$')
 
 def auto_detect(image_pil, bounds, config):
-    """
-    Deteksi cerdas dengan parameter dinamis dari user
-    """
     img = np.array(image_pil)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     height, width = gray.shape
 
-    # A. OCR (Baca semua teks dulu)
     with st.spinner("Membaca teks di gambar..."):
         custom_config = r'--oem 3 --psm 11'
         d = pytesseract.image_to_data(gray, config=custom_config, output_type=pytesseract.Output.DICT)
@@ -73,14 +68,11 @@ def auto_detect(image_pil, bounds, config):
                 cy = d['top'][i] + d['height'][i] // 2
                 detected_texts.append({'text': text, 'center': (cx, cy)})
 
-    # B. Cari Lingkaran (Tiang)
     with st.spinner("Mencari simbol tiang..."):
         circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1.2, minDist=20,
                                 param1=50, param2=30, minRadius=3, maxRadius=20)
     
     results = []
-    
-    # Ambil Keyword dari Config User
     fat_kw = config['fat_keyword'] 
     fdt_kw = config['fdt_keyword'] 
     pole_pattern = config['pole_regex'] 
@@ -90,30 +82,22 @@ def auto_detect(image_pil, bounds, config):
         for (x, y, r) in circles:
             label = "Unknown"
             obj_type = "TIANG/POLE"
-            min_dist = 80 # Jarak piksel toleransi text vs lingkaran
+            min_dist = 80
             
-            # Cek Teks Terdekat
             for text_obj in detected_texts:
                 tx, ty = text_obj['center']
                 dist = np.sqrt((x - tx)**2 + (y - ty)**2)
                 txt = text_obj['text']
                 
                 if dist < min_dist:
-                    # Logika Penentuan Tipe & Nama
-                    
-                    # 1. Cek FAT (Prioritas Utama)
                     if fat_kw in txt:
                         obj_type = "FAT"
                         label = txt
                         min_dist = dist 
-                    
-                    # 2. Cek FDT
                     elif fdt_kw in txt:
                         obj_type = "FDT"
                         label = txt
                         min_dist = dist
-                        
-                    # 3. Cek Pola Tiang (Jika bukan FAT/FDT)
                     elif re.match(pole_pattern, txt):
                         if obj_type == "TIANG/POLE": 
                             label = txt
@@ -126,8 +110,7 @@ def auto_detect(image_pil, bounds, config):
                     "name": label,
                     "lat": lat,
                     "lon": lon
-                })
-                
+                })     
     return results
 
 def load_kmz_to_geojson(uploaded_kmz):
@@ -148,7 +131,6 @@ def load_kmz_to_geojson(uploaded_kmz):
 def main():
     st.title("🌐 WebGIS Digitizer Pro")
     
-    # --- SIDEBAR: KONFIGURASI TOTAL ---
     with st.sidebar:
         st.header("1. File & Lokasi")
         uploaded_pdf = st.file_uploader("Upload PDF Area", type=['pdf'])
@@ -164,7 +146,6 @@ def main():
                         f.write(uploaded_kmz.read())
                     existing_geojson = kml2geojson.main.convert("temp_upload.kml")[0]
 
-        # Koordinat
         with st.expander("📍 Kalibrasi Peta (Georeference)", expanded=True):
             lat_center = st.number_input("Lat Center", value=-6.8800, format="%.5f")
             lon_center = st.number_input("Lon Center", value=109.1150, format="%.5f")
@@ -172,8 +153,6 @@ def main():
             opacity = st.slider("Transparansi", 0.0, 1.0, 0.6)
             
         st.divider()
-        
-        # --- SETTING PENAMAAN ---
         st.header("2. Standar Penamaan")
         fat_input = st.text_input("Kode Awal FAT", "FOT")
         fdt_input = st.text_input("Kode Awal FDT", "FDT")
@@ -193,7 +172,6 @@ def main():
         st.divider()
         run_auto = st.button("🚀 Jalankan Otomasi", type="primary")
 
-    # --- LOGIKA UTAMA ---
     bounds = [
         [lat_center - zoom_scale, lon_center - zoom_scale],
         [lat_center + zoom_scale, lon_center + zoom_scale]
@@ -204,7 +182,6 @@ def main():
     if 'auto_data' not in st.session_state:
         st.session_state['auto_data'] = []
 
-    # Load PDF Image
     image_data = None
     if uploaded_pdf:
         try:
@@ -213,24 +190,20 @@ def main():
         except:
             st.error("Gagal load PDF.")
 
-    # Run Automation
     if run_auto and image_data:
         results = auto_detect(image_data, bounds, config)
         st.session_state['auto_data'] = results
         st.success(f"Selesai! {len(results)} objek ditemukan.")
 
-    # --- VISUALISASI PETA ---
     with col1:
         m = folium.Map(location=[lat_center, lon_center], zoom_start=18)
         
-        # --- PERBAIKAN FINAL PETA ---
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
             attr='Google',
             name='Google Satellite'
         ).add_to(m)
         
-        # Layer 1: KMZ Eksisting
         if existing_geojson:
             folium.GeoJson(
                 existing_geojson,
@@ -238,20 +211,25 @@ def main():
                 style_function=lambda x: {'color': 'gray', 'weight': 2, 'dashArray': '5, 5'}
             ).add_to(m)
 
-        # Layer 2: PDF Overlay
+        # --- REVISI BAGIAN GAMBAR AGAR TIDAK ERROR ---
         if image_data:
+            # 1. Simpan gambar ke buffer
             img_byte = io.BytesIO()
             image_data.save(img_byte, format='PNG')
+            # 2. Encode ke Base64 (Teks) agar Folium bisa baca
+            encoded_img = base64.b64encode(img_byte.getvalue()).decode()
+            # 3. Buat Data URL
+            img_url = f"data:image/png;base64,{encoded_img}"
+
             folium.raster_layers.ImageOverlay(
-                image=img_byte.getvalue(),
+                image=img_url,  # Gunakan URL Base64, bukan bytes mentah
                 bounds=bounds,
                 opacity=opacity,
                 name="PDF Area"
             ).add_to(m)
             
-        # Layer 3: Hasil Otomasi
         for item in st.session_state['auto_data']:
-            icon_color = "green" # Tiang
+            icon_color = "green"
             if item['type'] == "FAT": icon_color = "purple"
             elif item['type'] == "FDT": icon_color = "red"
                 
@@ -261,24 +239,19 @@ def main():
                 icon=folium.Icon(color=icon_color, icon="info-sign")
             ).add_to(m)
         
-        # Tools Menggambar Manual
         draw = Draw(export=False)
         draw.add_to(m)
             
         st_folium(m, width="100%", height=700)
 
-    # --- DOWNLOAD SECTION ---
     with col2:
         st.subheader("📥 Download")
-        
-        # Statistik
         if st.session_state['auto_data']:
             counts = {}
             for x in st.session_state['auto_data']:
                 counts[x['type']] = counts.get(x['type'], 0) + 1
             st.write(counts)
             
-            # Generate KMZ
             kml = simplekml.Kml()
             folders = {
                 "TIANG/POLE": kml.newfolder(name="POLES"),
