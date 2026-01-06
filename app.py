@@ -222,7 +222,14 @@ def main():
     # --- VISUALISASI PETA ---
     with col1:
         m = folium.Map(location=[lat_center, lon_center], zoom_start=18)
-        folium.TileLayer('Google Satellite', attr='Google', tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}').add_to(m)
+        
+        # --- [REVISI BAGIAN ERROR] ---
+        # Kita pisahkan argumen 'tiles' dan 'name' agar tidak konflik
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            attr='Google',
+            name='Google Satellite'
+        ).add_to(m)
         
         # Layer 1: KMZ Eksisting
         if existing_geojson:
