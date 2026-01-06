@@ -1,0 +1,10 @@
+streamlit
+folium
+streamlit-folium
+simplekml
+kml2geojson
+pdf2image
+pillow
+opencv-python-headless
+pytesseract
+numpy
