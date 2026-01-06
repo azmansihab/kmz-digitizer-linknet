@@ -12,12 +12,11 @@ import cv2
 import pytesseract
 import numpy as np
 import re
-import base64  # <--- TAMBAHAN PENTING
+import base64
 
 # --- 1. KONFIGURASI HALAMAN ---
 st.set_page_config(layout="wide", page_title="Universal KMZ Digitizer")
 
-# CSS untuk menyembunyikan menu Streamlit
 hide_streamlit_style = """
             <style>
             #MainMenu {visibility: hidden;}
@@ -28,10 +27,9 @@ hide_streamlit_style = """
             """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# --- 2. FUNGSI BANTUAN (UTILITIES) ---
+# --- 2. FUNGSI UTILITIES ---
 
 def pixel_to_latlon(x, y, width, height, bounds):
-    """Konversi Pixel Gambar ke Koordinat GPS"""
     lat_min, lon_min = bounds[0]
     lat_max, lon_max = bounds[1]
     lat_range = lat_max - lat_min
@@ -50,27 +48,41 @@ def get_pole_regex(option_key):
     return patterns.get(option_key, r'^[0-9]+[A-Z]$')
 
 def auto_detect(image_pil, bounds, config):
+    # Konversi ke array OpenCv
     img = np.array(image_pil)
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    
+    # Pastikan grayscale
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = img
+
     height, width = gray.shape
 
-    with st.spinner("Membaca teks di gambar..."):
+    # 1. OCR (Scanning Teks)
+    # --psm 11 = Sparse text (teks menyebar acak, cocok untuk peta)
+    with st.spinner("Membaca teks (OCR)..."):
         custom_config = r'--oem 3 --psm 11'
         d = pytesseract.image_to_data(gray, config=custom_config, output_type=pytesseract.Output.DICT)
     
     detected_texts = []
     n_boxes = len(d['text'])
     for i in range(n_boxes):
-        if int(d['conf'][i]) > 40:
+        # Confidence > 30 (agak longgar agar teks buram terbaca)
+        if int(d['conf'][i]) > 30:
             text = d['text'][i].strip()
-            if text:
+            # Bersihkan simbol aneh
+            text = re.sub(r'[^a-zA-Z0-9\-]', '', text)
+            if len(text) > 1: # Abaikan 1 huruf doang
                 cx = d['left'][i] + d['width'][i] // 2
                 cy = d['top'][i] + d['height'][i] // 2
                 detected_texts.append({'text': text, 'center': (cx, cy)})
 
+    # 2. Deteksi Lingkaran (Tiang)
     with st.spinner("Mencari simbol tiang..."):
-        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1.2, minDist=20,
-                                param1=50, param2=30, minRadius=3, maxRadius=20)
+        # Parameter disesuaikan untuk gambar resolusi tinggi (300 DPI)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
+                                param1=50, param2=30, minRadius=5, maxRadius=40)
     
     results = []
     fat_kw = config['fat_keyword'] 
@@ -82,14 +94,16 @@ def auto_detect(image_pil, bounds, config):
         for (x, y, r) in circles:
             label = "Unknown"
             obj_type = "TIANG/POLE"
-            min_dist = 80
+            min_dist = 150 # Jarak toleransi diperbesar karena resolusi tinggi
             
+            # Cari teks terdekat dari lingkaran ini
             for text_obj in detected_texts:
                 tx, ty = text_obj['center']
                 dist = np.sqrt((x - tx)**2 + (y - ty)**2)
                 txt = text_obj['text']
                 
                 if dist < min_dist:
+                    # Logika Pencocokan
                     if fat_kw in txt:
                         obj_type = "FAT"
                         label = txt
@@ -103,6 +117,7 @@ def auto_detect(image_pil, bounds, config):
                             label = txt
                             min_dist = dist
             
+            # Simpan hasil (Bahkan yang Unknown pun disimpan agar user tau ada tiang)
             if label != "Unknown":
                 lat, lon = pixel_to_latlon(x, y, width, height, bounds)
                 results.append({
@@ -126,15 +141,19 @@ def load_kmz_to_geojson(uploaded_kmz):
     except Exception as e:
         return None
 
-# --- 3. MAIN APPLICATION ---
+# --- 3. APLIKASI UTAMA ---
 
 def main():
-    st.title("🌐 WebGIS Digitizer Pro")
+    st.title("🌐 WebGIS Digitizer Pro (High-Res)")
     
     with st.sidebar:
-        st.header("1. File & Lokasi")
+        st.header("1. Input Data")
         uploaded_pdf = st.file_uploader("Upload PDF Area", type=['pdf'])
         
+        # --- PERBAIKAN 1: PILIHAN DPI ---
+        # User bisa menaikkan DPI jika PDF buram
+        pdf_dpi = st.number_input("Resolusi Scan (DPI)", min_value=100, max_value=400, value=200, step=50, help="Semakin tinggi DPI, semakin tajam gambar & akurat deteksi otomatis, tapi loading lebih lama.")
+
         with st.expander("📂 Overlay Eksisting (KMZ)", expanded=False):
             uploaded_kmz = st.file_uploader("Upload KMZ Lama", type=['kmz', 'kml'])
             existing_geojson = None
@@ -149,7 +168,7 @@ def main():
         with st.expander("📍 Kalibrasi Peta (Georeference)", expanded=True):
             lat_center = st.number_input("Lat Center", value=-6.8800, format="%.5f")
             lon_center = st.number_input("Lon Center", value=109.1150, format="%.5f")
-            zoom_scale = st.slider("Scale/Zoom PDF", 0.001, 0.020, 0.005, step=0.0001)
+            zoom_scale = st.slider("Zoom Scale (Ukuran Gambar)", 0.001, 0.020, 0.005, step=0.0001)
             opacity = st.slider("Transparansi", 0.0, 1.0, 0.6)
             
         st.divider()
@@ -172,6 +191,7 @@ def main():
         st.divider()
         run_auto = st.button("🚀 Jalankan Otomasi", type="primary")
 
+    # Hitung Bounds
     bounds = [
         [lat_center - zoom_scale, lon_center - zoom_scale],
         [lat_center + zoom_scale, lon_center + zoom_scale]
@@ -182,19 +202,27 @@ def main():
     if 'auto_data' not in st.session_state:
         st.session_state['auto_data'] = []
 
+    # --- PROSES PDF ---
     image_data = None
     if uploaded_pdf:
         try:
-            images = convert_from_bytes(uploaded_pdf.read())
+            # --- PERBAIKAN 2: KONVERSI DENGAN DPI TINGGI ---
+            # Menggunakan DPI dari input user (Default 200) agar teks terbaca jelas
+            images = convert_from_bytes(uploaded_pdf.read(), dpi=pdf_dpi)
             image_data = images[0]
-        except:
-            st.error("Gagal load PDF.")
+        except Exception as e:
+            st.error(f"Gagal memproses PDF: {e}")
 
+    # --- PROSES OTOMASI ---
     if run_auto and image_data:
         results = auto_detect(image_data, bounds, config)
         st.session_state['auto_data'] = results
-        st.success(f"Selesai! {len(results)} objek ditemukan.")
+        if len(results) > 0:
+            st.success(f"Berhasil! {len(results)} objek ditemukan.")
+        else:
+            st.warning("0 Objek ditemukan. Coba naikkan 'Resolusi Scan (DPI)' di sidebar menjadi 300, lalu klik jalankan lagi.")
 
+    # --- TAMPILAN PETA ---
     with col1:
         m = folium.Map(location=[lat_center, lon_center], zoom_start=18)
         
@@ -211,18 +239,16 @@ def main():
                 style_function=lambda x: {'color': 'gray', 'weight': 2, 'dashArray': '5, 5'}
             ).add_to(m)
 
-        # --- REVISI BAGIAN GAMBAR AGAR TIDAK ERROR ---
+        # --- PERBAIKAN 3: OVERLAY BASE64 (SOLUSI OVERLAY GAGAL) ---
         if image_data:
-            # 1. Simpan gambar ke buffer
+            # Kompres sedikit agar tidak berat di peta, tapi tetap tajam
             img_byte = io.BytesIO()
-            image_data.save(img_byte, format='PNG')
-            # 2. Encode ke Base64 (Teks) agar Folium bisa baca
+            image_data.save(img_byte, format='PNG', optimize=True)
             encoded_img = base64.b64encode(img_byte.getvalue()).decode()
-            # 3. Buat Data URL
             img_url = f"data:image/png;base64,{encoded_img}"
 
             folium.raster_layers.ImageOverlay(
-                image=img_url,  # Gunakan URL Base64, bukan bytes mentah
+                image=img_url,
                 bounds=bounds,
                 opacity=opacity,
                 name="PDF Area"
@@ -244,6 +270,7 @@ def main():
             
         st_folium(m, width="100%", height=700)
 
+    # --- DOWNLOAD ---
     with col2:
         st.subheader("📥 Download")
         if st.session_state['auto_data']:
@@ -262,15 +289,17 @@ def main():
             for item in st.session_state['auto_data']:
                 f = folders.get(item['type'], folders["TIANG/POLE"])
                 p = f.newpoint(name=item['name'], coords=[(item['lon'], item['lat'])])
+                
+                # Style Icon
                 if item['type'] == "FAT": 
                     p.style.iconstyle.color = simplekml.Color.purple
-                    p.style.iconstyle.icon.href = "http://maps.google.com/mapfiles/kml/paddle/purple-circle.png"
+                    p.style.iconstyle.icon.href = "http://googleusercontent.com/maps.google.com/mapfiles/kml/pushpin/ylw-pushpin.png"
                 elif item['type'] == "FDT": 
                     p.style.iconstyle.color = simplekml.Color.red
-                    p.style.iconstyle.icon.href = "http://maps.google.com/mapfiles/kml/paddle/red-circle.png"
+                    p.style.iconstyle.icon.href = "http://googleusercontent.com/maps.google.com/mapfiles/kml/pushpin/red-pushpin.png"
                 else: 
                     p.style.iconstyle.color = simplekml.Color.green
-                    p.style.iconstyle.icon.href = "http://maps.google.com/mapfiles/kml/paddle/grn-circle.png"
+                    p.style.iconstyle.icon.href = "http://googleusercontent.com/maps.google.com/mapfiles/kml/pushpin/grn-pushpin.png"
 
             kmz_buf = io.BytesIO()
             kml.savekmz(kmz_buf)
@@ -284,7 +313,7 @@ def main():
                 type="primary"
             )
         else:
-            st.info("Upload PDF & Klik 'Jalankan Otomasi' atau gambar manual.")
+            st.info("Panduan:\n1. Upload PDF.\n2. Atur 'Resolusi Scan' ke 300.\n3. Klik 'Jalankan Otomasi'.")
 
 if __name__ == "__main__":
     main()
