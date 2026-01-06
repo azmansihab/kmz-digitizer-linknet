@@ -223,8 +223,7 @@ def main():
     with col1:
         m = folium.Map(location=[lat_center, lon_center], zoom_start=18)
         
-        # --- [REVISI BAGIAN ERROR] ---
-        # Kita pisahkan argumen 'tiles' dan 'name' agar tidak konflik
+        # --- PERBAIKAN FINAL PETA ---
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
             attr='Google',
